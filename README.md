@@ -1,205 +1,169 @@
-# RAG vs Agentic RAG
+# Agentic RAG Pipeline
 
-Multi-agent **Agentic RAG** with **LangGraph**, **ChromaDB**, and **Groq** free-tier inference (`llama-3.3-70b-versatile`).
+Enterprise-oriented multi-agent Retrieval-Augmented Generation (RAG) service built with **LangGraph**, **ChromaDB**, and **Groq** inference (`llama-3.3-70b-versatile`).
 
-Each agent follows an explicit **ReAct** loop: **Thought → Action → Observation**. That is the main structural difference from normal RAG, which usually does a single retrieve → generate pass with no visible reasoning/acting steps.
+The pipeline separates retrieval, reasoning, and verification into specialized agents. Each agent executes an explicit **ReAct** cycle—**Thought → Action → Observation**—and contributes to a shared, auditable workflow state.
 
 ---
 
-## Project layout
+## Architecture
 
 ```
 RAG_VS_AgenticRAG/
-├── main.py                 # CLI — prints ReAct traces + verified answer
+├── main.py                      # CLI entry point
+├── pyproject.toml
 ├── requirements.txt
 ├── .env.example
 ├── README.md
 └── agentic_rag/
-    ├── __init__.py
-    ├── state.py            # Shared state + ReActStep trace
-    ├── react.py            # Thought/Action/Observation helpers
-    ├── llm.py              # Groq free LLM client
-    ├── vectorstore.py      # ChromaDB (same substrate as normal RAG)
-    ├── knowledge.py        # Seed documents
-    ├── ingest.py           # Load chunks into ChromaDB
-    ├── agents.py           # Retrieval / Reasoning / Verification / Error
-    └── graph.py            # LangGraph orchestration + routing
+    ├── __init__.py              # Public API exports
+    ├── config.py                # Environment-backed settings (Pydantic)
+    ├── exceptions.py            # Domain exception hierarchy
+    ├── logging_config.py        # Structured logging
+    ├── models.py                # PipelineResult response model
+    ├── state.py                 # LangGraph shared state contracts
+    ├── prompts.py               # Agent system prompts
+    ├── react.py                 # ReAct parsing and audit-trail helpers
+    ├── llm.py                   # Inference client factory
+    ├── vectorstore.py           # ChromaDB persistence and search
+    ├── knowledge.py             # Reference corpus
+    ├── ingest.py                # Corpus bootstrap
+    ├── agents.py                # Retrieval / Reasoning / Verification / Error
+    └── graph.py                 # Workflow compilation + AgenticRAGPipeline
 ```
 
----
-
-## High-level graph
+### Control flow
 
 ```text
-                         ┌──────────────┐
-                         │  User query  │
-                         └──────┬───────┘
-                                ▼
-              ┌─────────────────────────────────────┐
-              │         Retrieval agent             │
-              │  Thought → Action → Observation     │
-              └──────────────────┬──────────────────┘
-                                 ▼
-              ┌─────────────────────────────────────┐
-              │         Reasoning agent             │
-              │  Thought → Action → Observation     │
-              └──────────────────┬──────────────────┘
-                                 ▼
-              ┌─────────────────────────────────────┐
-              │       Verification agent            │
-              │  Thought → Action → Observation     │
-              └───────────┬─────────────┬───────────┘
-                 grounded │             │ not grounded
-                          ▼             ▼
-                     ┌────────┐   ┌─────────────┐
-                     │  END   │   │ retry       │──► Retrieval again
-                     └────────┘   └─────────────┘
-
-Any failure ──► Error-handler agent (fallback Action) ──► END
+Query
+  └─► Retrieval Agent      (Thought → Action: vector search → Observation)
+        └─► Reasoning Agent (Thought → Action: draft answer → Observation)
+              └─► Verification Agent
+                    ├─ grounded ──► END (verified answer)
+                    └─ not grounded + retries remaining ──► Retrieval (retry)
+Any node failure ──► Error-handler Agent ──► END (controlled fallback)
 ```
 
 ---
 
-## Agents in detail (reasoning & acting)
+## Agent responsibilities
 
-### 1. Retrieval agent
+### Retrieval agent
 
-| ReAct step | What happens |
-|------------|----------------|
-| **Thought** | LLM plans what to look up and rewrites a focused `SEARCH_QUERY` |
-| **Action** | Tool call: `similarity_search(search_query, k=4)` on ChromaDB |
-| **Observation** | How many chunks came back; store docs in shared state |
-| **Route** | `reason` if docs found, else `error` |
+| Step | Behavior |
+|------|----------|
+| Thought | Reformulates the question into an embedding-optimized search query |
+| Action | Executes `similarity_search` against ChromaDB |
+| Observation | Records retrieved documents and routes to reasoning or error handling |
 
-```text
-THOUGHT: "Need definition of Agentic RAG and the three agent roles"
-ACTION:  similarity_search("Agentic RAG retrieval reasoning verification", k=4)
-OBSERVATION: "Retrieved 4 chunk(s)..."
-```
+### Reasoning agent
 
-Normal RAG usually searches with the raw user string and never records a search plan.
+| Step | Behavior |
+|------|----------|
+| Thought | Maps retrieved evidence to the question and identifies gaps |
+| Action | Produces a context-grounded draft answer with citations |
+| Observation | Persists the draft; routes to verification (draft is never final) |
 
----
+### Verification agent
 
-### 2. Reasoning agent
+| Step | Behavior |
+|------|----------|
+| Thought | Performs claim-level grounding analysis against retrieved context |
+| Action | Accepts, corrects, or rejects the draft |
+| Observation | Completes the run, or schedules a retrieval retry within configured limits |
 
-| ReAct step | What happens |
-|------------|----------------|
-| **Thought** | Analyze evidence: what supports the answer, what is missing |
-| **Action** | Produce `DRAFT_ANSWER` grounded only in retrieved context |
-| **Observation** | Draft length / ready for verification |
-| **Route** | Always `verify` (draft is never final) |
+### Error-handler agent
 
-```text
-THOUGHT: "Chunks [1] and [12] define Agentic RAG; cite them"
-ACTION:  draft_answer_from_context
-OBSERVATION: "Draft produced (... chars). Awaiting verification."
-```
-
-Normal RAG merges “think” and “answer” into one opaque generate call and returns it immediately.
+Produces a controlled fallback response when an upstream agent fails, preserving auditability for operators and callers.
 
 ---
 
-### 3. Verification agent
+## Classic RAG vs Agentic RAG
 
-| ReAct step | What happens |
-|------------|----------------|
-| **Thought** | Check which draft claims are supported by context |
-| **Action** | `accept_answer` / `reject_and_retry_retrieval` / `accept_best_effort` |
-| **Observation** | Grounded flag + notes; may loop the graph |
-| **Route** | `complete`, or `retrieve` to retry, or `complete` after max retries |
+| Dimension | Classic RAG | This pipeline |
+|-----------|-------------|----------------|
+| Execution model | Linear retrieve → generate | Conditional multi-agent graph |
+| Reasoning | Implicit inside a single generation call | Explicit `THOUGHT` per agent |
+| Acting | One-shot answer generation | Tool actions (search) + draft + accept/reject |
+| Observability | Limited intermediate artifacts | Full `react_trace` audit trail |
+| Quality control | First generation is final | Verification gate with bounded retries |
+| Failure handling | Exceptions or empty answers | Dedicated error-handler node |
+| Integration surface | Ad-hoc function return | Typed `PipelineResult` |
 
-```text
-THOUGHT: "Claim about Verification agent is supported by [12]"
-ACTION:  accept_answer
-OBSERVATION: "Draft accepted as grounded. Completing workflow."
-```
+Shared with classic RAG: document ingest, embeddings, and vector similarity search.
 
-Normal RAG has no second agent and no verification-driven retry.
-
----
-
-### 4. Error-handler agent
-
-| ReAct step | What happens |
-|------------|----------------|
-| **Thought** | Upstream failed; avoid crashing |
-| **Action** | `emit_fallback_answer` |
-| **Observation** | Error summary written into state |
+Differentiating capabilities: multi-agent specialization, LangGraph routing, verification loops, and structured operational telemetry.
 
 ---
 
-## ReAct inside one agent
+## Configuration
 
-Every specialist agent writes to `react_trace`:
+Copy `.env.example` to `.env` and set required values:
 
-```text
-┌──────────────────────────────────────────┐
-│ Agent (e.g. Reasoning)                   │
-│                                          │
-│  1. THOUGHT   — decide strategy / gaps   │
-│  2. ACTION    — tool call or draft text  │
-│  3. OBSERVE   — write result to state    │
-│  4. ROUTE     — set next_action          │
-└──────────────────────────────────────────┘
-```
-
-Shared fields that make this inspectable:
-
-| State field | Filled by | Purpose |
-|-------------|-----------|---------|
-| `search_query` | Retrieval Thought | Rewritten vector query |
-| `reasoning_thought` | Reasoning Thought | Evidence plan |
-| `draft_answer` | Reasoning Action | Intermediate answer |
-| `verification_thought` | Verification Thought | Grounding analysis |
-| `verified_answer` | Verification Action | Final (or corrected) answer |
-| `react_trace` | All agents | Full Thought/Action/Observation log |
-| `next_action` | All agents | Graph routing key |
+| Variable | Description |
+|----------|-------------|
+| `GROQ_API_KEY` | Inference provider API key (required for query execution) |
+| `GROQ_MODEL` | Model identifier (default: `llama-3.3-70b-versatile`) |
+| `CHROMA_PERSIST_DIR` | Local ChromaDB persistence path |
+| `CHROMA_COLLECTION` | Collection name |
+| `RETRIEVAL_TOP_K` | Number of chunks retrieved per search |
+| `MAX_VERIFICATION_RETRIES` | Bound on verification-driven retries |
+| `LOG_LEVEL` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` |
 
 ---
 
-## Normal RAG vs this Agentic RAG
-
-| Aspect | Normal RAG | Agentic RAG (this repo) |
-|--------|------------|-------------------------|
-| Pipeline | retrieve → generate | Graph of ReAct agents |
-| Reasoning | Hidden inside one LLM call | Explicit `THOUGHT` per agent |
-| Acting | Generate text once | Tool acts (search) + draft + accept/reject |
-| Observation | Discarded locals | Stored in `react_trace` + state |
-| Control | Fixed order | `next_action` + retries |
-| Quality | First answer is final | Verification can reject and re-retrieve |
-| Failures | Raise / silent bad answer | Error-handler agent |
-
-**Same as normal RAG:** ingest, embeddings, ChromaDB similarity search.
-
-**Different:** multi-agent ReAct orchestration, shared state, dynamic routing, verification loops.
-
----
-
-## Setup
+## Installation
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-
 cp .env.example .env
-# Set GROQ_API_KEY from https://console.groq.com/keys
+# Set GROQ_API_KEY in .env
 ```
 
-## Run
+---
+
+## Usage
+
+### CLI
 
 ```bash
 source .venv/bin/activate
 python main.py "What is Agentic RAG?"
-python main.py "Compare MCP and ACP" --json    # full state including react_trace
-python main.py --reingest "Why use multi-agent systems?"
+python main.py "Compare MCP and ACP" --json
+python main.py --reingest --log-level DEBUG "Why use multi-agent systems?"
 ```
 
-The CLI prints each agent's Thought → Action → Observation by default, then the verified answer.
+### Programmatic API
+
+```python
+from agentic_rag import AgenticRAGPipeline
+from agentic_rag.ingest import ingest_knowledge
+
+ingest_knowledge()
+pipeline = AgenticRAGPipeline()
+result = pipeline.invoke("What is Agentic RAG?")
+
+print(result.answer)
+print(result.is_grounded)
+print(result.react_trace)
+```
+
+---
+
+## Design notes
+
+- **Configuration**: validated via Pydantic Settings; secrets are never hard-coded.
+- **Observability**: agents emit structured logs and append ReAct steps to shared state.
+- **Resilience**: verification retries are bounded; failures route to an error-handler node.
+- **API stability**: external callers should depend on `AgenticRAGPipeline` and `PipelineResult`.
 
 ## Stack
 
-- **LangGraph** — graph nodes/edges, shared state, dynamic routing
-- **ChromaDB** — local persistent vector store (retrieval Action tool)
-- **Groq** — free inference for Thought / draft / verify LLM steps
+| Component | Role |
+|-----------|------|
+| LangGraph | Graph orchestration, shared state, conditional routing |
+| ChromaDB | Persistent local vector store |
+| Groq | Low-latency chat inference for agent Thought / Action steps |
+| Pydantic | Settings and response validation |
