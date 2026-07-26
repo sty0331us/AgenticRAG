@@ -24,6 +24,16 @@ dependencies = [
   "typing-extensions>=4.0.0",
 ]
 
+[project.optional-dependencies]
+guardrails-llm-guard = ["llm-guard>=0.3.0"]
+guardrails-aws = ["boto3>=1.34.0"]
+guardrails-azure = ["azure-ai-contentsafety>=1.0.0"]
+guardrails-all = [
+  "llm-guard>=0.3.0",
+  "boto3>=1.34.0",
+  "azure-ai-contentsafety>=1.0.0",
+]
+
 [project.scripts]
 agentic-rag = "main:main"
 

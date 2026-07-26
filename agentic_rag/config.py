@@ -39,6 +39,21 @@ class Settings(BaseSettings):
     deterministic_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
     log_level: str = Field(default="INFO")
 
+    # Guardrails: local | llm-guard | bedrock | azure
+    # local / llm-guard = open-source path; bedrock / azure = managed cloud scale-out
+    guardrail_backend: str = Field(default="local")
+    guardrail_max_input_chars: int = Field(default=4000, ge=256, le=100_000)
+    guardrail_max_output_chars: int = Field(default=8000, ge=256, le=200_000)
+
+    # AWS Bedrock Guardrails (when GUARDRAIL_BACKEND=bedrock)
+    guardrail_bedrock_id: Optional[str] = Field(default=None)
+    guardrail_bedrock_version: str = Field(default="DRAFT")
+    aws_region: Optional[str] = Field(default=None)
+
+    # Azure AI Content Safety (when GUARDRAIL_BACKEND=azure)
+    azure_content_safety_endpoint: Optional[str] = Field(default=None)
+    azure_content_safety_key: Optional[str] = Field(default=None)
+
     @field_validator("groq_api_key")
     @classmethod
     def _normalize_api_key(cls, value: Optional[str]) -> Optional[str]:

@@ -47,6 +47,16 @@ def _print_result(result: PipelineResult) -> None:
     if result.errors:
         print(f"Errors: {result.errors}")
     print(f"Retrieved documents: {len(result.retrieved_docs)}")
+    if result.input_guardrail is not None:
+        print(
+            f"Input guardrail: allowed={result.input_guardrail.get('allowed')} "
+            f"provider={result.input_guardrail.get('provider')}"
+        )
+    if result.output_guardrail is not None:
+        print(
+            f"Output guardrail: allowed={result.output_guardrail.get('allowed')} "
+            f"provider={result.output_guardrail.get('provider')}"
+        )
 
 
 def build_parser() -> argparse.ArgumentParser:

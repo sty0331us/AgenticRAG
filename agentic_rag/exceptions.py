@@ -21,3 +21,7 @@ class EmptyKnowledgeBaseError(RetrievalError):
 
 class LLMInvocationError(AgenticRAGError):
     """Raised when an LLM call fails."""
+
+
+class GuardrailBlockedError(AgenticRAGError):
+    """Raised when content is blocked by a configured guardrail policy."""
