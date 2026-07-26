@@ -1,4 +1,14 @@
-"""Free-tier LLM setup via Groq (OpenAI-compatible free inference)."""
+"""
+Free-tier LLM setup via Groq (OpenAI-compatible free inference).
+
+Difference from normal RAG
+--------------------------
+In normal RAG the LLM is called once to generate the final answer.
+
+In Agentic RAG the same client is reused by multiple agents (Reasoning and
+Verification) with different temperatures/prompts — specialization by role,
+not a single monolithic generate step.
+"""
 
 from __future__ import annotations
 

@@ -1,4 +1,12 @@
-"""Ingest seed knowledge into ChromaDB."""
+"""
+Ingest seed knowledge into ChromaDB.
+
+Difference from normal RAG
+--------------------------
+Ingest/indexing is the same idea as normal RAG (chunk → embed → store).
+Agentic RAG does not change how documents enter the vector DB; it changes what
+happens after a query hits that DB (multi-agent graph vs single generate).
+"""
 
 from __future__ import annotations
 

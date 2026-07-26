@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""CLI entrypoint for the Agentic RAG demo."""
+"""
+CLI entrypoint for the Agentic RAG demo.
+
+Difference from normal RAG
+--------------------------
+A normal RAG CLI would: ingest (optional) → retrieve → one LLM call → print answer.
+This CLI invokes a multi-agent LangGraph workflow and can surface Agentic-only
+fields: grounded flag, verification notes, draft→verified answers, and errors.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +21,10 @@ from agentic_rag.ingest import ingest_knowledge
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Agentic RAG with LangGraph + ChromaDB (Groq free inference)"
+        description=(
+            "Agentic RAG with LangGraph + ChromaDB (Groq free inference). "
+            "Unlike normal RAG, this runs retrieval → reasoning → verification agents."
+        )
     )
     parser.add_argument(
         "query",
@@ -29,7 +40,7 @@ def main() -> int:
     parser.add_argument(
         "--json",
         action="store_true",
-        help="Print full final state as JSON",
+        help="Print full final state as JSON (includes Agentic fields normal RAG lacks)",
     )
     args = parser.parse_args()
 
@@ -37,6 +48,7 @@ def main() -> int:
     print(f"ChromaDB documents: {count}\n")
     print(f"Query: {args.query}\n")
     print("Running Agentic RAG (retrieval → reasoning → verification)...\n")
+    print("(Normal RAG would stop after a single retrieve → generate step.)\n")
 
     final_state = run_agentic_rag(args.query)
 
@@ -45,10 +57,11 @@ def main() -> int:
         return 0
 
     print("=" * 60)
-    print("VERIFIED ANSWER")
+    print("VERIFIED ANSWER  (Agentic: post-verification; Normal RAG: first draft)")
     print("=" * 60)
     print(final_state.get("verified_answer") or "(no answer)")
     print()
+    # These metrics are Agentic-specific — classic RAG typically has no grounding check
     print(f"Grounded: {final_state.get('is_grounded')}")
     if final_state.get("verification_notes"):
         print(f"Notes: {final_state['verification_notes']}")

@@ -1,4 +1,15 @@
-"""ChromaDB vector store for Agentic RAG knowledge retrieval."""
+"""
+ChromaDB vector store for Agentic RAG knowledge retrieval.
+
+Difference from normal RAG
+--------------------------
+This layer is largely the SAME as normal RAG: embed documents, store vectors,
+run similarity search.
+
+The Agentic difference starts after retrieval — normal RAG feeds chunks straight
+into one LLM call; here the Retrieval agent writes chunks into shared state and
+hands control to Reasoning / Verification via LangGraph routing.
+"""
 
 from __future__ import annotations
 
@@ -60,7 +71,12 @@ def similarity_search(
     query: str,
     k: int = 4,
 ) -> Tuple[List[str], List[dict]]:
-    """Retrieve top-k relevant chunks for a query."""
+    """
+    Retrieve top-k relevant chunks for a query.
+
+    Same core operation as normal RAG retrieval; Agentic RAG wraps this inside
+    a Retrieval agent instead of calling it inline before a single generate step.
+    """
     collection = get_collection()
     if collection.count() == 0:
         return [], []

@@ -1,4 +1,20 @@
-"""Multi-agent nodes for Agentic RAG: retrieval, reasoning, verification, error handling."""
+"""
+Multi-agent nodes for Agentic RAG: retrieval, reasoning, verification, error handling.
+
+Difference from normal RAG
+--------------------------
+Normal RAG:
+  retrieve(docs) → llm.generate(query + docs) → return answer
+
+Agentic RAG (this file):
+  Retrieval agent   → only fetches context and routes next
+  Reasoning agent   → only drafts an answer (not final)
+  Verification agent→ checks grounding; may retry the pipeline
+  Error-handler     → dedicated fallback (normal RAG rarely has this)
+
+Each function is a LangGraph node that updates shared state instead of returning
+a final string immediately.
+"""
 
 from __future__ import annotations
 
@@ -8,11 +24,17 @@ from agentic_rag.llm import get_llm
 from agentic_rag.state import AgenticRAGState
 from agentic_rag.vectorstore import similarity_search
 
-MAX_RETRIES = 2
+MAX_RETRIES = 2  # Agentic-only: normal RAG typically does not retry after generate
 
 
 def retrieval_agent(state: AgenticRAGState) -> AgenticRAGState:
-    """Retrieval agent: fetch relevant knowledge from ChromaDB."""
+    """
+    Retrieval agent: fetch relevant knowledge from ChromaDB.
+
+    vs normal RAG: retrieval still uses similarity search, but here it is a
+    dedicated agent that sets next_action ('reason' or 'error') instead of
+    immediately calling the LLM in the same function.
+    """
     try:
         docs, metas = similarity_search(state["query"], k=4)
         state["retrieved_docs"] = docs
@@ -32,7 +54,12 @@ def retrieval_agent(state: AgenticRAGState) -> AgenticRAGState:
 
 
 def reasoning_agent(state: AgenticRAGState) -> AgenticRAGState:
-    """Reasoning agent: infer an answer grounded in retrieved context."""
+    """
+    Reasoning agent: infer a draft answer grounded in retrieved context.
+
+    vs normal RAG: this is the 'generate' step, but the output is a draft only.
+    The answer is not trusted as final until the Verification agent runs.
+    """
     try:
         docs = state.get("retrieved_docs") or []
         context = "\n\n".join(f"[{i + 1}] {doc}" for i, doc in enumerate(docs))
@@ -65,7 +92,12 @@ def reasoning_agent(state: AgenticRAGState) -> AgenticRAGState:
 
 
 def verification_agent(state: AgenticRAGState) -> AgenticRAGState:
-    """Verification agent: check draft answer for accuracy and consistency vs context."""
+    """
+    Verification agent: check draft answer for accuracy and consistency vs context.
+
+    vs normal RAG: classic RAG usually skips this — the first LLM answer is final.
+    Here a second specialized agent can reject ungrounded answers and trigger retries.
+    """
     try:
         docs = state.get("retrieved_docs") or []
         context = "\n\n".join(f"[{i + 1}] {doc}" for i, doc in enumerate(docs))
@@ -119,6 +151,7 @@ def verification_agent(state: AgenticRAGState) -> AgenticRAGState:
         if grounded:
             state["next_action"] = "complete"
         elif state.get("retry_count", 0) < MAX_RETRIES:
+            # Dynamic loop — not part of a normal linear RAG pipeline
             state["retry_count"] = state.get("retry_count", 0) + 1
             state["errors"] = state.get("errors", []) + [
                 f"Verification failed grounding check (retry {state['retry_count']})."
@@ -136,7 +169,12 @@ def verification_agent(state: AgenticRAGState) -> AgenticRAGState:
 
 
 def error_handler_agent(state: AgenticRAGState) -> AgenticRAGState:
-    """Error agent: fallback, summarize errors, and terminate safely."""
+    """
+    Error agent: fallback, summarize errors, and terminate safely.
+
+    vs normal RAG: failures often raise exceptions or return empty/poor answers
+    with little structure. Agentic RAG routes failures to a dedicated node.
+    """
     errors = state.get("errors") or []
     error_summary = "; ".join(errors) if errors else "Unknown error"
     state["verified_answer"] = (

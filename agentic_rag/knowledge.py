@@ -1,4 +1,11 @@
-"""Seed knowledge documents for the Agentic RAG demo (multi-agent + Agentic RAG)."""
+"""
+Seed knowledge documents for the Agentic RAG demo (multi-agent + Agentic RAG).
+
+Difference from normal RAG
+--------------------------
+Corpus content is unrelated to Agentic vs normal RAG architecture — both can
+index the same chunks. What differs is the query-time graph that consumes them.
+"""
 
 KNOWLEDGE_CHUNKS = [
     {
