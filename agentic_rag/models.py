@@ -33,8 +33,6 @@ class PipelineResult(BaseModel):
     react_trace: List[ReActStepModel] = Field(default_factory=list)
     errors: List[str] = Field(default_factory=list)
     retry_count: int = 0
-    input_guardrail: Optional[Dict[str, Any]] = None
-    output_guardrail: Optional[Dict[str, Any]] = None
 
     @classmethod
     def from_state(cls, state: AgenticRAGState) -> "PipelineResult":
@@ -52,8 +50,6 @@ class PipelineResult(BaseModel):
             react_trace=[ReActStepModel(**step) for step in (state.get("react_trace") or [])],
             errors=list(state.get("errors") or []),
             retry_count=int(state.get("retry_count") or 0),
-            input_guardrail=state.get("input_guardrail"),
-            output_guardrail=state.get("output_guardrail"),
         )
 
     def to_dict(self) -> Dict[str, Any]:

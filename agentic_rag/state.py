@@ -34,9 +34,6 @@ class AgenticRAGState(TypedDict):
     verified_answer: Optional[str]
     verification_notes: Optional[str]
     is_grounded: Optional[bool]
-    # Guardrail decisions (input before retrieval, output before return)
-    input_guardrail: Optional[dict]
-    output_guardrail: Optional[dict]
     react_trace: List[ReActStep]
     errors: List[str]
     next_action: str

@@ -191,8 +191,8 @@ def verification_agent(state: AgenticRAGState) -> AgenticRAGState:
         max_retries = cfg.max_verification_retries
         if grounded:
             action = "accept_answer"
-            observation = "Draft accepted as grounded; routing to output guardrail."
-            state["next_action"] = "output_guard"
+            observation = "Draft accepted as grounded; workflow complete."
+            state["next_action"] = "complete"
             logger.info("Verification accepted grounded answer")
         elif state.get("retry_count", 0) < max_retries:
             state["retry_count"] = state.get("retry_count", 0) + 1
@@ -211,13 +211,13 @@ def verification_agent(state: AgenticRAGState) -> AgenticRAGState:
             action = "accept_best_effort"
             observation = (
                 "Grounding check failed after maximum retries; "
-                "routing best-effort answer to output guardrail."
+                "returning best-effort answer."
             )
             append_error(
                 state,
                 "Answer not grounded after maximum retries; returning best-effort answer.",
             )
-            state["next_action"] = "output_guard"
+            state["next_action"] = "complete"
             logger.warning("Verification exhausted retries; returning best-effort answer")
 
         append_react_step(
@@ -243,10 +243,8 @@ def error_handler_agent(state: AgenticRAGState) -> AgenticRAGState:
     """
     errors = state.get("errors") or []
     error_summary = "; ".join(errors) if errors else "Unknown pipeline error"
-    # Preserve messages already set by input/output guardrail nodes.
     fallback = (
-        state.get("verified_answer")
-        or state.get("draft_answer")
+        state.get("draft_answer")
         or f"Unable to complete the request. Details: {error_summary}"
     )
     state["verified_answer"] = fallback

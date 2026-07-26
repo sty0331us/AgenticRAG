@@ -3,8 +3,7 @@ LangGraph workflow compilation and pipeline service facade.
 
 Classic RAG executes a fixed retrieve → generate sequence. This module compiles
 a conditional StateGraph in which each node is a ReAct agent and routing is
-driven by shared state (`next_action`), including verification-triggered retries
-and input/output guardrail gates.
+driven by shared state (`next_action`), including verification-triggered retries.
 """
 
 from __future__ import annotations
@@ -22,7 +21,6 @@ from agentic_rag.agents import (
     verification_agent,
 )
 from agentic_rag.config import Settings, get_settings
-from agentic_rag.guardrails.nodes import input_guardrail_agent, output_guardrail_agent
 from agentic_rag.logging_config import get_logger
 from agentic_rag.models import PipelineResult
 from agentic_rag.state import AgenticRAGState
@@ -33,8 +31,6 @@ _ROUTE_MAP = {
     "retrieve": "retrieval",
     "reason": "reasoning",
     "verify": "verification",
-    # After successful verification, enforce output safety before returning.
-    "output_guard": "output_guardrail",
     "error": "error_handler",
     "complete": "END",
 }
@@ -46,37 +42,22 @@ def route_next_step(state: AgenticRAGState) -> str:
 
 
 def build_workflow() -> CompiledStateGraph:
-    """
-    Construct and compile the Agentic RAG StateGraph.
-
-    Order of safety + intelligence nodes:
-      input_guardrail → retrieval → reasoning → verification → output_guardrail
-    """
+    """Construct and compile the Agentic RAG StateGraph."""
     workflow = StateGraph(AgenticRAGState)
-    workflow.add_node("input_guardrail", input_guardrail_agent)
     workflow.add_node("retrieval", retrieval_agent)
     workflow.add_node("reasoning", reasoning_agent)
     workflow.add_node("verification", verification_agent)
-    workflow.add_node("output_guardrail", output_guardrail_agent)
     workflow.add_node("error_handler", error_handler_agent)
-    workflow.set_entry_point("input_guardrail")
+    workflow.set_entry_point("retrieval")
 
     destinations = {
         "retrieval": "retrieval",
         "reasoning": "reasoning",
         "verification": "verification",
-        "output_guardrail": "output_guardrail",
         "error_handler": "error_handler",
         "END": END,
     }
-    for node in (
-        "input_guardrail",
-        "retrieval",
-        "reasoning",
-        "verification",
-        "output_guardrail",
-        "error_handler",
-    ):
+    for node in ("retrieval", "reasoning", "verification", "error_handler"):
         workflow.add_conditional_edges(node, route_next_step, destinations)
 
     return workflow.compile()
@@ -101,8 +82,6 @@ def initial_state(query: str) -> AgenticRAGState:
         "verified_answer": None,
         "verification_notes": None,
         "is_grounded": None,
-        "input_guardrail": None,
-        "output_guardrail": None,
         "react_trace": [],
         "errors": [],
         "next_action": "retrieve",
@@ -123,18 +102,14 @@ class AgenticRAGPipeline:
     def __init__(self, settings: Optional[Settings] = None) -> None:
         self.settings = settings or get_settings()
         self.settings.require_api_key()
-        # Rebuild provider cache if settings object is injected for tests.
         self._app = get_compiled_workflow()
 
     def invoke(self, query: str) -> PipelineResult:
-        """Execute guardrails + retrieval → reasoning → verification pipeline."""
+        """Execute the full retrieval → reasoning → verification pipeline."""
         if not query or not query.strip():
             raise ValueError("query must be a non-empty string")
 
-        logger.info(
-            "Pipeline invoke started guardrail_backend=%s",
-            self.settings.guardrail_backend,
-        )
+        logger.info("Pipeline invoke started")
         final_state: AgenticRAGState = self._app.invoke(initial_state(query))
         result = PipelineResult.from_state(final_state)
         logger.info(
