@@ -1,98 +1,178 @@
 # RAG vs Agentic RAG
 
-Multi-agent **Agentic RAG** built with **LangGraph**, **ChromaDB**, and **Groq** free-tier inference (`llama-3.3-70b-versatile`).
+Multi-agent **Agentic RAG** with **LangGraph**, **ChromaDB**, and **Groq** free-tier inference (`llama-3.3-70b-versatile`).
 
-This project shows how Agentic RAG differs from a normal (classic) RAG pipeline: specialized agents, shared state, dynamic routing, verification, and retries.
+Each agent follows an explicit **ReAct** loop: **Thought → Action → Observation**. That is the main structural difference from normal RAG, which usually does a single retrieve → generate pass with no visible reasoning/acting steps.
 
 ---
 
-## System structure
+## Project layout
 
 ```
 RAG_VS_AgenticRAG/
-├── main.py                 # CLI entry — runs the multi-agent graph
+├── main.py                 # CLI — prints ReAct traces + verified answer
 ├── requirements.txt
 ├── .env.example
 ├── README.md
 └── agentic_rag/
     ├── __init__.py
-    ├── state.py            # Shared TypedDict state (vs one-shot locals in normal RAG)
-    ├── llm.py              # Free Groq LLM client
-    ├── vectorstore.py      # ChromaDB (same retrieval substrate as normal RAG)
-    ├── knowledge.py        # Seed documents about multi-agent / Agentic RAG
+    ├── state.py            # Shared state + ReActStep trace
+    ├── react.py            # Thought/Action/Observation helpers
+    ├── llm.py              # Groq free LLM client
+    ├── vectorstore.py      # ChromaDB (same substrate as normal RAG)
+    ├── knowledge.py        # Seed documents
     ├── ingest.py           # Load chunks into ChromaDB
-    ├── agents.py           # Retrieval / Reasoning / Verification / Error agents
+    ├── agents.py           # Retrieval / Reasoning / Verification / Error
     └── graph.py            # LangGraph orchestration + routing
 ```
 
-### Runtime flow (Agentic RAG)
+---
+
+## High-level graph
 
 ```text
-                    ┌─────────────────┐
-                    │  User query     │
-                    └────────┬────────┘
-                             ▼
-                    ┌─────────────────┐
-                    │ Retrieval agent │  ← ChromaDB similarity search
-                    └────────┬────────┘
-                             ▼
-                    ┌─────────────────┐
-                    │ Reasoning agent │  ← Draft answer from context
-                    └────────┬────────┘
-                             ▼
-                    ┌─────────────────┐
-              ┌─────│ Verification    │─────┐
-              │     │ agent           │     │
-              │     └─────────────────┘     │
-              │ grounded?                   │ not grounded + retries left
-              ▼                             ▼
-         ┌─────────┐              ┌─────────────────┐
-         │  END    │              │ re-retrieve /   │
-         │ answer  │              │ re-reason loop  │
-         └─────────┘              └─────────────────┘
+                         ┌──────────────┐
+                         │  User query  │
+                         └──────┬───────┘
+                                ▼
+              ┌─────────────────────────────────────┐
+              │         Retrieval agent             │
+              │  Thought → Action → Observation     │
+              └──────────────────┬──────────────────┘
+                                 ▼
+              ┌─────────────────────────────────────┐
+              │         Reasoning agent             │
+              │  Thought → Action → Observation     │
+              └──────────────────┬──────────────────┘
+                                 ▼
+              ┌─────────────────────────────────────┐
+              │       Verification agent            │
+              │  Thought → Action → Observation     │
+              └───────────┬─────────────┬───────────┘
+                 grounded │             │ not grounded
+                          ▼             ▼
+                     ┌────────┐   ┌─────────────┐
+                     │  END   │   │ retry       │──► Retrieval again
+                     └────────┘   └─────────────┘
 
-Any step failure → Error-handler agent → safe fallback answer → END
+Any failure ──► Error-handler agent (fallback Action) ──► END
 ```
-
-### Normal RAG (for contrast)
-
-```text
-User query → retrieve top-k → single LLM generate → answer (done)
-```
-
-No separate verification agent, no dynamic routing, no retry loop, no dedicated error agent.
 
 ---
 
-## Normal RAG vs Agentic RAG
+## Agents in detail (reasoning & acting)
 
-| Aspect | Normal RAG | This Agentic RAG |
-|--------|------------|------------------|
-| Pipeline | Fixed linear: retrieve → generate | Graph of agents with conditional edges |
-| Roles | One LLM does everything after retrieval | Specialized agents (retrieve / reason / verify / error) |
-| State | Ephemeral locals in one function | Shared `AgenticRAGState` updated by every node |
-| Control flow | Always the same path | `next_action` + `route_next_step()` choose the next node |
-| Quality check | Usually none (answer returned as-is) | Verification agent checks grounding; can retry |
-| Failures | Often bubble up or silent bad answers | Error-handler agent + retries |
-| Debugging | Harder (monolithic prompt/call) | Easier (inspect per-agent state fields) |
-| Vector DB | ChromaDB / similar | Same idea (ChromaDB) — difference is *orchestration*, not storage |
+### 1. Retrieval agent
 
-**Shared with normal RAG:** document ingest, embeddings, similarity search over a vector store.
+| ReAct step | What happens |
+|------------|----------------|
+| **Thought** | LLM plans what to look up and rewrites a focused `SEARCH_QUERY` |
+| **Action** | Tool call: `similarity_search(search_query, k=4)` on ChromaDB |
+| **Observation** | How many chunks came back; store docs in shared state |
+| **Route** | `reason` if docs found, else `error` |
 
-**Unique to Agentic RAG here:** multi-agent specialization, LangGraph routing, verification, retry, and modular error handling.
+```text
+THOUGHT: "Need definition of Agentic RAG and the three agent roles"
+ACTION:  similarity_search("Agentic RAG retrieval reasoning verification", k=4)
+OBSERVATION: "Retrieved 4 chunk(s)..."
+```
+
+Normal RAG usually searches with the raw user string and never records a search plan.
 
 ---
 
-## Module map (what differs where)
+### 2. Reasoning agent
 
-| File | Role | vs normal RAG |
-|------|------|----------------|
-| `vectorstore.py` / `ingest.py` | Index & search | Closest to normal RAG (same retrieve step) |
-| `state.py` | Shared graph state | Normal RAG has no multi-step shared state object |
-| `agents.py` | Four specialized nodes | Normal RAG collapses reason+answer into one LLM call |
-| `graph.py` | LangGraph + routing | Normal RAG is a script, not a routed graph |
-| `llm.py` | Model client | Used by *multiple* agents, not once |
-| `main.py` | CLI | Invokes the graph, not a single retrieve→generate |
+| ReAct step | What happens |
+|------------|----------------|
+| **Thought** | Analyze evidence: what supports the answer, what is missing |
+| **Action** | Produce `DRAFT_ANSWER` grounded only in retrieved context |
+| **Observation** | Draft length / ready for verification |
+| **Route** | Always `verify` (draft is never final) |
+
+```text
+THOUGHT: "Chunks [1] and [12] define Agentic RAG; cite them"
+ACTION:  draft_answer_from_context
+OBSERVATION: "Draft produced (... chars). Awaiting verification."
+```
+
+Normal RAG merges “think” and “answer” into one opaque generate call and returns it immediately.
+
+---
+
+### 3. Verification agent
+
+| ReAct step | What happens |
+|------------|----------------|
+| **Thought** | Check which draft claims are supported by context |
+| **Action** | `accept_answer` / `reject_and_retry_retrieval` / `accept_best_effort` |
+| **Observation** | Grounded flag + notes; may loop the graph |
+| **Route** | `complete`, or `retrieve` to retry, or `complete` after max retries |
+
+```text
+THOUGHT: "Claim about Verification agent is supported by [12]"
+ACTION:  accept_answer
+OBSERVATION: "Draft accepted as grounded. Completing workflow."
+```
+
+Normal RAG has no second agent and no verification-driven retry.
+
+---
+
+### 4. Error-handler agent
+
+| ReAct step | What happens |
+|------------|----------------|
+| **Thought** | Upstream failed; avoid crashing |
+| **Action** | `emit_fallback_answer` |
+| **Observation** | Error summary written into state |
+
+---
+
+## ReAct inside one agent (template)
+
+Every specialist agent writes to `react_trace`:
+
+```text
+┌──────────────────────────────────────────┐
+│ Agent (e.g. Reasoning)                   │
+│                                          │
+│  1. THOUGHT   — decide strategy / gaps   │
+│  2. ACTION    — tool call or draft text  │
+│  3. OBSERVE   — write result to state    │
+│  4. ROUTE     — set next_action          │
+└──────────────────────────────────────────┘
+```
+
+Shared fields that make this inspectable:
+
+| State field | Filled by | Purpose |
+|-------------|-----------|---------|
+| `search_query` | Retrieval Thought | Rewritten vector query |
+| `reasoning_thought` | Reasoning Thought | Evidence plan |
+| `draft_answer` | Reasoning Action | Intermediate answer |
+| `verification_thought` | Verification Thought | Grounding analysis |
+| `verified_answer` | Verification Action | Final (or corrected) answer |
+| `react_trace` | All agents | Full Thought/Action/Observation log |
+| `next_action` | All agents | Graph routing key |
+
+---
+
+## Normal RAG vs this Agentic RAG
+
+| Aspect | Normal RAG | Agentic RAG (this repo) |
+|--------|------------|-------------------------|
+| Pipeline | retrieve → generate | Graph of ReAct agents |
+| Reasoning | Hidden inside one LLM call | Explicit `THOUGHT` per agent |
+| Acting | Generate text once | Tool acts (search) + draft + accept/reject |
+| Observation | Discarded locals | Stored in `react_trace` + state |
+| Control | Fixed order | `next_action` + retries |
+| Quality | First answer is final | Verification can reject and re-retrieve |
+| Failures | Raise / silent bad answer | Error-handler agent |
+
+**Same as normal RAG:** ingest, embeddings, ChromaDB similarity search.
+
+**Different:** multi-agent ReAct orchestration, shared state, dynamic routing, verification loops.
 
 ---
 
@@ -112,14 +192,14 @@ cp .env.example .env
 ```bash
 source .venv/bin/activate
 python main.py "What is Agentic RAG?"
-python main.py "Compare MCP and ACP" --json
+python main.py "Compare MCP and ACP" --json    # full state including react_trace
 python main.py --reingest "Why use multi-agent systems?"
 ```
 
-Knowledge about multi-agent systems and Agentic RAG is auto-ingested into ChromaDB on first run.
+The CLI prints each agent's Thought → Action → Observation by default, then the verified answer.
 
 ## Stack
 
-- **LangGraph** — graph orchestration, shared state, dynamic routing
-- **ChromaDB** — local persistent vector store
-- **Groq** — free inference (`llama-3.3-70b-versatile` by default)
+- **LangGraph** — graph nodes/edges, shared state, dynamic routing
+- **ChromaDB** — local persistent vector store (retrieval Action tool)
+- **Groq** — free inference for Thought / draft / verify LLM steps

@@ -4,9 +4,8 @@ CLI entrypoint for the Agentic RAG demo.
 
 Difference from normal RAG
 --------------------------
-A normal RAG CLI would: ingest (optional) → retrieve → one LLM call → print answer.
-This CLI invokes a multi-agent LangGraph workflow and can surface Agentic-only
-fields: grounded flag, verification notes, draft→verified answers, and errors.
+Prints verified answers plus optional ReAct traces (Thought / Action / Observation)
+from each agent — not just a single generate() string.
 """
 
 from __future__ import annotations
@@ -19,11 +18,25 @@ from agentic_rag.graph import run_agentic_rag
 from agentic_rag.ingest import ingest_knowledge
 
 
+def _print_react_trace(trace) -> None:
+    if not trace:
+        return
+    print("=" * 60)
+    print("REACT TRACE  (Thought → Action → Observation per agent)")
+    print("=" * 60)
+    for i, step in enumerate(trace, 1):
+        print(f"\n[{i}] Agent: {step.get('agent')}")
+        print(f"    Thought:     {step.get('thought')}")
+        print(f"    Action:      {step.get('action')}")
+        print(f"    Observation: {step.get('observation')}")
+    print()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Agentic RAG with LangGraph + ChromaDB (Groq free inference). "
-            "Unlike normal RAG, this runs retrieval → reasoning → verification agents."
+            "Agentic RAG with LangGraph + ChromaDB. "
+            "Each agent runs Thought → Action → Observation (ReAct)."
         )
     )
     parser.add_argument(
@@ -40,15 +53,14 @@ def main() -> int:
     parser.add_argument(
         "--json",
         action="store_true",
-        help="Print full final state as JSON (includes Agentic fields normal RAG lacks)",
+        help="Print full final state as JSON (includes react_trace)",
     )
     args = parser.parse_args()
 
     count = ingest_knowledge(force=args.reingest)
     print(f"ChromaDB documents: {count}\n")
     print(f"Query: {args.query}\n")
-    print("Running Agentic RAG (retrieval → reasoning → verification)...\n")
-    print("(Normal RAG would stop after a single retrieve → generate step.)\n")
+    print("Running Agentic RAG agents (each: Thought → Action → Observation)...\n")
 
     final_state = run_agentic_rag(args.query)
 
@@ -56,13 +68,16 @@ def main() -> int:
         print(json.dumps(final_state, indent=2, default=str))
         return 0
 
+    _print_react_trace(final_state.get("react_trace") or [])
+
     print("=" * 60)
-    print("VERIFIED ANSWER  (Agentic: post-verification; Normal RAG: first draft)")
+    print("VERIFIED ANSWER")
     print("=" * 60)
     print(final_state.get("verified_answer") or "(no answer)")
     print()
-    # These metrics are Agentic-specific — classic RAG typically has no grounding check
     print(f"Grounded: {final_state.get('is_grounded')}")
+    if final_state.get("search_query"):
+        print(f"Search query (retrieval Thought→Act): {final_state['search_query']}")
     if final_state.get("verification_notes"):
         print(f"Notes: {final_state['verification_notes']}")
     if final_state.get("errors"):

@@ -1,19 +1,21 @@
 """
-Multi-agent nodes for Agentic RAG: retrieval, reasoning, verification, error handling.
+Multi-agent nodes with explicit ReAct loops: Thought → Action → Observation.
 
 Difference from normal RAG
 --------------------------
-Normal RAG:
-  retrieve(docs) → llm.generate(query + docs) → return answer
+Normal RAG: retrieve → one generate call → answer.
 
-Agentic RAG (this file):
-  Retrieval agent   → only fetches context and routes next
-  Reasoning agent   → only drafts an answer (not final)
-  Verification agent→ checks grounding; may retry the pipeline
-  Error-handler     → dedicated fallback (normal RAG rarely has this)
+Agentic RAG agents each run a mini ReAct cycle:
+  1. Thought  — decide what to do / how to interpret evidence
+  2. Action   — call a tool or produce a structured artifact
+  3. Observation — record result into shared state + react_trace
 
-Each function is a LangGraph node that updates shared state instead of returning
-a final string immediately.
+Agents
+------
+  retrieval_agent    — Think (rewrite query) → Act (ChromaDB search) → Observe
+  reasoning_agent    — Think (plan answer from evidence) → Act (draft) → Observe
+  verification_agent — Think (check claims) → Act (accept/correct) → Observe
+  error_handler_agent— Act (safe fallback) when any step fails
 """
 
 from __future__ import annotations
@@ -21,24 +23,60 @@ from __future__ import annotations
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agentic_rag.llm import get_llm
+from agentic_rag.react import append_react_step, format_context, parse_labeled_blocks
 from agentic_rag.state import AgenticRAGState
 from agentic_rag.vectorstore import similarity_search
 
-MAX_RETRIES = 2  # Agentic-only: normal RAG typically does not retry after generate
+MAX_RETRIES = 2
 
 
 def retrieval_agent(state: AgenticRAGState) -> AgenticRAGState:
     """
-    Retrieval agent: fetch relevant knowledge from ChromaDB.
+    Retrieval agent (ReAct).
 
-    vs normal RAG: retrieval still uses similarity search, but here it is a
-    dedicated agent that sets next_action ('reason' or 'error') instead of
-    immediately calling the LLM in the same function.
+    Thought  → reformulate / focus the user query for vector search
+    Action   → similarity_search(search_query) against ChromaDB
+    Observe  → store docs; route to reasoning or error
     """
     try:
-        docs, metas = similarity_search(state["query"], k=4)
+        llm = get_llm(temperature=0.0)
+        think = llm.invoke(
+            [
+                SystemMessage(
+                    content=(
+                        "You are the Retrieval agent in an Agentic RAG system.\n"
+                        "Run one ReAct cycle focused on SEARCH PLANNING only.\n"
+                        "Respond in this exact format:\n"
+                        "THOUGHT: <what information is needed and why>\n"
+                        "SEARCH_QUERY: <concise query optimized for vector search>"
+                    )
+                ),
+                HumanMessage(content=f"User question:\n{state['query']}"),
+            ]
+        )
+        think_text = think.content if isinstance(think.content, str) else str(think.content)
+        parsed = parse_labeled_blocks(think_text, ["THOUGHT", "SEARCH_QUERY"])
+        thought = parsed.get("THOUGHT") or "Search the knowledge base for passages relevant to the question."
+        search_query = parsed.get("SEARCH_QUERY") or state["query"]
+        state["search_query"] = search_query
+
+        # ACTION: tool call (vector search) — this is the "Act" half of ReAct
+        docs, metas = similarity_search(search_query, k=4)
         state["retrieved_docs"] = docs
         state["retrieved_metadatas"] = metas
+
+        observation = (
+            f"Retrieved {len(docs)} chunk(s) for search_query={search_query!r}."
+            if docs
+            else "No documents retrieved from ChromaDB."
+        )
+        append_react_step(
+            state,
+            agent="retrieval",
+            thought=thought,
+            action=f"similarity_search(query={search_query!r}, k=4)",
+            observation=observation,
+        )
 
         if not docs:
             state["errors"] = state.get("errors", []) + [
@@ -47,7 +85,7 @@ def retrieval_agent(state: AgenticRAGState) -> AgenticRAGState:
             state["next_action"] = "error"
         else:
             state["next_action"] = "reason"
-    except Exception as exc:  # noqa: BLE001 — surface to error agent
+    except Exception as exc:  # noqa: BLE001
         state["errors"] = state.get("errors", []) + [f"Retrieval failed: {exc}"]
         state["next_action"] = "error"
     return state
@@ -55,35 +93,56 @@ def retrieval_agent(state: AgenticRAGState) -> AgenticRAGState:
 
 def reasoning_agent(state: AgenticRAGState) -> AgenticRAGState:
     """
-    Reasoning agent: infer a draft answer grounded in retrieved context.
+    Reasoning agent (ReAct).
 
-    vs normal RAG: this is the 'generate' step, but the output is a draft only.
-    The answer is not trusted as final until the Verification agent runs.
+    Thought  → analyze evidence, decide how to answer, note gaps
+    Action   → write a grounded DRAFT_ANSWER (still not final)
+    Observe  → store thought + draft; route to verification
+
+    vs normal RAG: generate is split into explicit reasoning then drafting,
+    and the draft is not trusted until verification.
     """
     try:
         docs = state.get("retrieved_docs") or []
-        context = "\n\n".join(f"[{i + 1}] {doc}" for i, doc in enumerate(docs))
+        context = format_context(docs)
 
         llm = get_llm(temperature=0.2)
-        messages = [
-            SystemMessage(
-                content=(
-                    "You are the Reasoning agent in an Agentic RAG system. "
-                    "Answer the user's question using ONLY the provided retrieved context. "
-                    "Be precise and cite chunk numbers like [1], [2] when relevant. "
-                    "If the context is insufficient, say what is missing."
-                )
-            ),
-            HumanMessage(
-                content=(
-                    f"Question:\n{state['query']}\n\n"
-                    f"Retrieved context:\n{context}\n\n"
-                    "Draft a grounded answer."
-                )
-            ),
-        ]
-        response = llm.invoke(messages)
-        state["draft_answer"] = response.content
+        response = llm.invoke(
+            [
+                SystemMessage(
+                    content=(
+                        "You are the Reasoning agent in an Agentic RAG system.\n"
+                        "Use ReAct: first think, then act by drafting an answer.\n"
+                        "Use ONLY the retrieved context. Cite chunks like [1], [2].\n"
+                        "Respond in this exact format:\n"
+                        "THOUGHT: <how the evidence maps to the question; gaps if any>\n"
+                        "DRAFT_ANSWER: <grounded answer draft>"
+                    )
+                ),
+                HumanMessage(
+                    content=(
+                        f"Question:\n{state['query']}\n\n"
+                        f"Search query used:\n{state.get('search_query') or state['query']}\n\n"
+                        f"Retrieved context:\n{context}"
+                    )
+                ),
+            ]
+        )
+        content = response.content if isinstance(response.content, str) else str(response.content)
+        parsed = parse_labeled_blocks(content, ["THOUGHT", "DRAFT_ANSWER"])
+        thought = parsed.get("THOUGHT") or content
+        draft = parsed.get("DRAFT_ANSWER") or content
+
+        state["reasoning_thought"] = thought
+        state["draft_answer"] = draft
+
+        append_react_step(
+            state,
+            agent="reasoning",
+            thought=thought,
+            action="draft_answer_from_context",
+            observation=f"Draft produced ({len(draft)} chars). Awaiting verification.",
+        )
         state["next_action"] = "verify"
     except Exception as exc:  # noqa: BLE001
         state["errors"] = state.get("errors", []) + [f"Reasoning failed: {exc}"]
@@ -93,75 +152,89 @@ def reasoning_agent(state: AgenticRAGState) -> AgenticRAGState:
 
 def verification_agent(state: AgenticRAGState) -> AgenticRAGState:
     """
-    Verification agent: check draft answer for accuracy and consistency vs context.
+    Verification agent (ReAct).
 
-    vs normal RAG: classic RAG usually skips this — the first LLM answer is final.
-    Here a second specialized agent can reject ungrounded answers and trigger retries.
+    Thought  → check whether each claim in the draft is supported by context
+    Action   → accept, correct, or reject (set GROUNDED + FINAL_ANSWER)
+    Observe  → complete, retry retrieval, or stop after max retries
+
+    vs normal RAG: classic RAG has no second agent and no retry loop.
     """
     try:
         docs = state.get("retrieved_docs") or []
-        context = "\n\n".join(f"[{i + 1}] {doc}" for i, doc in enumerate(docs))
+        context = format_context(docs)
         draft = state.get("draft_answer") or ""
+        prior_thought = state.get("reasoning_thought") or ""
 
         llm = get_llm(temperature=0.0)
-        messages = [
-            SystemMessage(
-                content=(
-                    "You are the Verification agent in an Agentic RAG system. "
-                    "Check whether the draft answer is accurate, consistent, and grounded "
-                    "in the retrieved context. Respond in this exact format:\n"
-                    "GROUNDED: yes|no\n"
-                    "NOTES: <brief notes>\n"
-                    "FINAL_ANSWER: <corrected or confirmed answer>"
-                )
-            ),
-            HumanMessage(
-                content=(
-                    f"Question:\n{state['query']}\n\n"
-                    f"Retrieved context:\n{context}\n\n"
-                    f"Draft answer:\n{draft}"
-                )
-            ),
-        ]
-        response = llm.invoke(messages)
+        response = llm.invoke(
+            [
+                SystemMessage(
+                    content=(
+                        "You are the Verification agent in an Agentic RAG system.\n"
+                        "Use ReAct: think about grounding, then act by accepting or correcting.\n"
+                        "Respond in this exact format:\n"
+                        "THOUGHT: <which claims are supported or unsupported>\n"
+                        "GROUNDED: yes|no\n"
+                        "NOTES: <brief notes>\n"
+                        "FINAL_ANSWER: <corrected or confirmed answer>"
+                    )
+                ),
+                HumanMessage(
+                    content=(
+                        f"Question:\n{state['query']}\n\n"
+                        f"Reasoning agent's THOUGHT:\n{prior_thought}\n\n"
+                        f"Retrieved context:\n{context}\n\n"
+                        f"Draft answer:\n{draft}"
+                    )
+                ),
+            ]
+        )
         content = response.content if isinstance(response.content, str) else str(response.content)
+        parsed = parse_labeled_blocks(
+            content, ["THOUGHT", "GROUNDED", "NOTES", "FINAL_ANSWER"]
+        )
 
-        grounded = False
-        notes = content
-        final_answer = draft
+        thought = parsed.get("THOUGHT") or content
+        grounded = "yes" in (parsed.get("GROUNDED") or "").lower()
+        notes = parsed.get("NOTES") or ""
+        final_answer = parsed.get("FINAL_ANSWER") or draft
 
-        for line in content.splitlines():
-            upper = line.strip()
-            lower = upper.lower()
-            if lower.startswith("grounded:"):
-                grounded = "yes" in lower.split(":", 1)[1]
-            elif lower.startswith("notes:"):
-                notes = upper.split(":", 1)[1].strip()
-
-        if "FINAL_ANSWER:" in content:
-            final_answer = content.split("FINAL_ANSWER:", 1)[1].strip()
-        elif "final_answer:" in content.lower():
-            idx = content.lower().index("final_answer:")
-            final_answer = content[idx + len("final_answer:") :].strip()
-
+        state["verification_thought"] = thought
         state["is_grounded"] = grounded
         state["verification_notes"] = notes
         state["verified_answer"] = final_answer
 
         if grounded:
+            action = "accept_answer"
+            observation = "Draft accepted as grounded. Completing workflow."
             state["next_action"] = "complete"
         elif state.get("retry_count", 0) < MAX_RETRIES:
-            # Dynamic loop — not part of a normal linear RAG pipeline
             state["retry_count"] = state.get("retry_count", 0) + 1
+            action = "reject_and_retry_retrieval"
+            observation = (
+                f"Not grounded. Scheduling retrieval retry "
+                f"({state['retry_count']}/{MAX_RETRIES})."
+            )
             state["errors"] = state.get("errors", []) + [
                 f"Verification failed grounding check (retry {state['retry_count']})."
             ]
-            state["next_action"] = "retrieve"  # re-retrieve / re-reason pipeline
+            state["next_action"] = "retrieve"
         else:
+            action = "accept_best_effort"
+            observation = "Not grounded after max retries; returning best-effort answer."
             state["errors"] = state.get("errors", []) + [
                 "Answer not grounded after max retries; returning best-effort verified answer."
             ]
             state["next_action"] = "complete"
+
+        append_react_step(
+            state,
+            agent="verification",
+            thought=thought,
+            action=action,
+            observation=observation,
+        )
     except Exception as exc:  # noqa: BLE001
         state["errors"] = state.get("errors", []) + [f"Verification failed: {exc}"]
         state["next_action"] = "error"
@@ -170,18 +243,25 @@ def verification_agent(state: AgenticRAGState) -> AgenticRAGState:
 
 def error_handler_agent(state: AgenticRAGState) -> AgenticRAGState:
     """
-    Error agent: fallback, summarize errors, and terminate safely.
+    Error agent: Act with a safe fallback when Thought/Action fails upstream.
 
-    vs normal RAG: failures often raise exceptions or return empty/poor answers
-    with little structure. Agentic RAG routes failures to a dedicated node.
+    vs normal RAG: failures often raise or return empty answers with no node.
     """
     errors = state.get("errors") or []
     error_summary = "; ".join(errors) if errors else "Unknown error"
-    state["verified_answer"] = (
+    fallback = (
         state.get("draft_answer")
         or f"Unable to complete Agentic RAG for this query. Errors: {error_summary}"
     )
+    state["verified_answer"] = fallback
     state["verification_notes"] = f"Handled by error agent. {error_summary}"
     state["is_grounded"] = False
+    append_react_step(
+        state,
+        agent="error_handler",
+        thought="Upstream agent failed; produce a safe fallback instead of crashing.",
+        action="emit_fallback_answer",
+        observation=error_summary,
+    )
     state["next_action"] = "complete"
     return state
