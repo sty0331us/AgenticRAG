@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentic-rag"
+version = "1.0.0"
+description = "Multi-agent Agentic RAG pipeline with LangGraph and ChromaDB"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "sty0331us" }]
+dependencies = [
+  "langgraph>=0.2.0",
+  "langchain>=0.3.0",
+  "langchain-core>=0.3.0",
+  "langchain-community>=0.3.0",
+  "langchain-groq>=0.2.0",
+  "langchain-text-splitters>=0.3.0",
+  "chromadb>=0.5.0",
+  "python-dotenv>=1.0.0",
+  "pydantic>=2.0.0",
+  "pydantic-settings>=2.0.0",
+  "typing-extensions>=4.0.0",
+]
+
+[project.scripts]
+agentic-rag = "main:main"
+
+[tool.setuptools.packages.find]
+include = ["agentic_rag*"]

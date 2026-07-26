@@ -1,90 +1,120 @@
 #!/usr/bin/env python3
-"""
-CLI entrypoint for the Agentic RAG demo.
-
-Difference from normal RAG
---------------------------
-Prints verified answers plus optional ReAct traces (Thought / Action / Observation)
-from each agent — not just a single generate() string.
-"""
+"""Command-line interface for the Agentic RAG pipeline."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+from typing import Sequence
 
-from agentic_rag.graph import run_agentic_rag
+from agentic_rag.config import get_settings
+from agentic_rag.exceptions import AgenticRAGError, ConfigurationError
+from agentic_rag.graph import AgenticRAGPipeline
 from agentic_rag.ingest import ingest_knowledge
+from agentic_rag.logging_config import configure_logging, get_logger
+from agentic_rag.models import PipelineResult
+
+logger = get_logger(__name__)
 
 
-def _print_react_trace(trace) -> None:
-    if not trace:
+def _print_react_trace(result: PipelineResult) -> None:
+    if not result.react_trace:
         return
-    print("=" * 60)
-    print("REACT TRACE  (Thought → Action → Observation per agent)")
-    print("=" * 60)
-    for i, step in enumerate(trace, 1):
-        print(f"\n[{i}] Agent: {step.get('agent')}")
-        print(f"    Thought:     {step.get('thought')}")
-        print(f"    Action:      {step.get('action')}")
-        print(f"    Observation: {step.get('observation')}")
+    print("=" * 72)
+    print("EXECUTION TRACE (Thought → Action → Observation)")
+    print("=" * 72)
+    for index, step in enumerate(result.react_trace, start=1):
+        print(f"\n[{index}] Agent: {step.agent}")
+        print(f"    Thought:     {step.thought}")
+        print(f"    Action:      {step.action}")
+        print(f"    Observation: {step.observation}")
     print()
 
 
-def main() -> int:
+def _print_result(result: PipelineResult) -> None:
+    _print_react_trace(result)
+    print("=" * 72)
+    print("VERIFIED ANSWER")
+    print("=" * 72)
+    print(result.answer or "(empty)")
+    print()
+    print(f"Grounded: {result.is_grounded}")
+    if result.search_query:
+        print(f"Search query: {result.search_query}")
+    if result.verification_notes:
+        print(f"Verification notes: {result.verification_notes}")
+    if result.errors:
+        print(f"Errors: {result.errors}")
+    print(f"Retrieved documents: {len(result.retrieved_docs)}")
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
+        prog="agentic-rag",
         description=(
-            "Agentic RAG with LangGraph + ChromaDB. "
-            "Each agent runs Thought → Action → Observation (ReAct)."
-        )
+            "Execute the multi-agent Agentic RAG pipeline "
+            "(retrieval → reasoning → verification) with ReAct tracing."
+        ),
     )
     parser.add_argument(
         "query",
         nargs="?",
-        default="What is Agentic RAG and how do the Retrieval, Reasoning, and Verification agents work?",
-        help="Question to ask the Agentic RAG system",
+        default=(
+            "What is Agentic RAG and how do the Retrieval, Reasoning, "
+            "and Verification agents operate?"
+        ),
+        help="Natural-language question submitted to the pipeline",
     )
     parser.add_argument(
         "--reingest",
         action="store_true",
-        help="Force re-ingest of knowledge chunks into ChromaDB",
+        help="Force re-ingestion of the reference knowledge corpus",
     )
     parser.add_argument(
         "--json",
         action="store_true",
-        help="Print full final state as JSON (includes react_trace)",
+        help="Emit the full PipelineResult as JSON",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--log-level",
+        default=None,
+        help="Override log level (DEBUG, INFO, WARNING, ERROR)",
+    )
+    return parser
 
-    count = ingest_knowledge(force=args.reingest)
-    print(f"ChromaDB documents: {count}\n")
-    print(f"Query: {args.query}\n")
-    print("Running Agentic RAG agents (each: Thought → Action → Observation)...\n")
 
-    final_state = run_agentic_rag(args.query)
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
 
-    if args.json:
-        print(json.dumps(final_state, indent=2, default=str))
+    try:
+        settings = get_settings()
+        configure_logging(args.log_level or settings.log_level)
+        document_count = ingest_knowledge(force=args.reingest, settings=settings)
+        logger.info("Indexed document count=%s", document_count)
+
+        pipeline = AgenticRAGPipeline(settings=settings)
+        result = pipeline.invoke(args.query)
+
+        if args.json:
+            print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
+        else:
+            print(f"Indexed documents: {document_count}\n")
+            print(f"Query: {args.query}\n")
+            _print_result(result)
         return 0
-
-    _print_react_trace(final_state.get("react_trace") or [])
-
-    print("=" * 60)
-    print("VERIFIED ANSWER")
-    print("=" * 60)
-    print(final_state.get("verified_answer") or "(no answer)")
-    print()
-    print(f"Grounded: {final_state.get('is_grounded')}")
-    if final_state.get("search_query"):
-        print(f"Search query (retrieval Thought→Act): {final_state['search_query']}")
-    if final_state.get("verification_notes"):
-        print(f"Notes: {final_state['verification_notes']}")
-    if final_state.get("errors"):
-        print(f"Errors: {final_state['errors']}")
-    if final_state.get("retrieved_docs"):
-        print(f"\nRetrieved {len(final_state['retrieved_docs'])} chunks from ChromaDB.")
-    return 0
+    except ConfigurationError as exc:
+        logger.error("%s", exc)
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        return 2
+    except AgenticRAGError as exc:
+        logger.error("%s", exc)
+        print(f"Pipeline error: {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Unhandled failure")
+        print(f"Unexpected error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

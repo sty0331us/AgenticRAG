@@ -1,91 +1,95 @@
 """
-ChromaDB vector store for Agentic RAG knowledge retrieval.
+ChromaDB persistence and similarity search.
 
-Difference from normal RAG
---------------------------
-This layer is largely the SAME as normal RAG: embed documents, store vectors,
-run similarity search.
-
-The Agentic difference starts after retrieval — normal RAG feeds chunks straight
-into one LLM call; here the Retrieval agent writes chunks into shared state and
-hands control to Reasoning / Verification via LangGraph routing.
+Vector indexing and retrieval mirror classic RAG. Orchestration after retrieval
+(specialized agents, routing, verification) is handled by the LangGraph workflow.
 """
 
 from __future__ import annotations
 
-import os
 from functools import lru_cache
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import chromadb
-from chromadb.config import Settings
-from dotenv import load_dotenv
+from chromadb.api.models.Collection import Collection
+from chromadb.config import Settings as ChromaSettings
 
-load_dotenv()
+from agentic_rag.config import Settings, get_settings
+from agentic_rag.logging_config import get_logger
 
-DEFAULT_PERSIST_DIR = "./chroma_db"
-DEFAULT_COLLECTION = "agentic_rag_knowledge"
-
-
-def _persist_dir() -> str:
-    return os.getenv("CHROMA_PERSIST_DIR", DEFAULT_PERSIST_DIR)
-
-
-def _collection_name() -> str:
-    return os.getenv("CHROMA_COLLECTION", DEFAULT_COLLECTION)
+logger = get_logger(__name__)
 
 
 @lru_cache(maxsize=1)
-def get_chroma_client() -> chromadb.ClientAPI:
-    """Persistent ChromaDB client (local, no cloud account required)."""
+def get_chroma_client(persist_dir: str) -> chromadb.ClientAPI:
+    """Create a persistent ChromaDB client for the given directory."""
     return chromadb.PersistentClient(
-        path=_persist_dir(),
-        settings=Settings(anonymized_telemetry=False),
+        path=persist_dir,
+        settings=ChromaSettings(anonymized_telemetry=False),
     )
 
 
-def get_collection(name: Optional[str] = None):
-    client = get_chroma_client()
+def get_collection(
+    name: Optional[str] = None,
+    settings: Settings | None = None,
+) -> Collection:
+    """Return (or create) the configured knowledge collection."""
+    cfg = settings or get_settings()
+    client = get_chroma_client(str(cfg.chroma_persist_dir))
+    collection_name = name or cfg.chroma_collection
     return client.get_or_create_collection(
-        name=name or _collection_name(),
+        name=collection_name,
         metadata={"hnsw:space": "cosine"},
     )
 
 
 def add_documents(
-    texts: List[str],
-    metadatas: Optional[List[dict]] = None,
-    ids: Optional[List[str]] = None,
-) -> None:
-    """Upsert documents into the collection (Chroma default embedding)."""
-    collection = get_collection()
-    if ids is None:
-        ids = [f"doc_{i}" for i in range(len(texts))]
-    if metadatas is None:
-        metadatas = [{"source": "knowledge_base"} for _ in texts]
+    texts: Sequence[str],
+    metadatas: Optional[Sequence[Dict[str, Any]]] = None,
+    ids: Optional[Sequence[str]] = None,
+    settings: Settings | None = None,
+) -> int:
+    """Upsert documents into the collection. Returns number of documents upserted."""
+    if not texts:
+        return 0
 
-    collection.upsert(documents=texts, metadatas=metadatas, ids=ids)
+    collection = get_collection(settings=settings)
+    doc_ids = list(ids) if ids is not None else [f"doc_{i}" for i in range(len(texts))]
+    meta = (
+        list(metadatas)
+        if metadatas is not None
+        else [{"source": "knowledge_base"} for _ in texts]
+    )
+    if len(doc_ids) != len(texts) or len(meta) != len(texts):
+        raise ValueError("texts, ids, and metadatas must have equal length")
+
+    collection.upsert(documents=list(texts), metadatas=meta, ids=doc_ids)
+    logger.info("Upserted %s documents into collection '%s'", len(texts), collection.name)
+    return len(texts)
 
 
 def similarity_search(
     query: str,
-    k: int = 4,
-) -> Tuple[List[str], List[dict]]:
-    """
-    Retrieve top-k relevant chunks for a query.
-
-    Same core operation as normal RAG retrieval; Agentic RAG wraps this inside
-    a Retrieval agent instead of calling it inline before a single generate step.
-    """
-    collection = get_collection()
-    if collection.count() == 0:
+    k: Optional[int] = None,
+    settings: Settings | None = None,
+) -> Tuple[List[str], List[Dict[str, Any]]]:
+    """Retrieve top-k documents by embedding similarity."""
+    cfg = settings or get_settings()
+    top_k = k if k is not None else cfg.retrieval_top_k
+    collection = get_collection(settings=cfg)
+    total = collection.count()
+    if total == 0:
+        logger.warning("Similarity search requested against an empty collection")
         return [], []
 
-    results = collection.query(query_texts=[query], n_results=min(k, collection.count()))
-    docs = results.get("documents", [[]])[0] or []
-    metas = results.get("metadatas", [[]])[0] or []
+    n_results = min(top_k, total)
+    results = collection.query(query_texts=[query], n_results=n_results)
+    docs = (results.get("documents") or [[]])[0] or []
+    metas = (results.get("metadatas") or [[]])[0] or []
+    logger.debug("Retrieved %s/%s documents for query", len(docs), n_results)
     return docs, metas
 
 
-def collection_count() -> int:
-    return get_collection().count()
+def collection_count(settings: Settings | None = None) -> int:
+    """Return the number of documents currently indexed."""
+    return get_collection(settings=settings).count()
