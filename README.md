@@ -129,7 +129,7 @@ Normal RAG has no second agent and no verification-driven retry.
 
 ---
 
-## ReAct inside one agent (template)
+## ReAct inside one agent
 
 Every specialist agent writes to `react_trace`:
 
