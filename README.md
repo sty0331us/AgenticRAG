@@ -96,6 +96,91 @@ Differentiating capabilities: multi-agent specialization, LangGraph routing, ver
 
 ---
 
+## Expected results comparison
+
+Same knowledge base, same model family. The difference is **what the caller receives** and **what can be inspected**.
+
+### Example query
+
+> What is Agentic RAG and how do Retrieval, Reasoning, and Verification agents work?
+
+#### Normal (classic) RAG — expected result
+
+```text
+Pipeline:  query → similarity_search → single LLM generate → return string
+
+Returned to caller:
+  "Agentic RAG combines retrieval, reasoning, and verification using specialized
+   agents. The retrieval agent fetches knowledge, the reasoning agent answers,
+   and the verification agent checks accuracy."
+
+What is typically NOT returned:
+  - rewritten search query
+  - intermediate draft vs final answer
+  - grounding / confidence flag
+  - per-step Thought → Action → Observation log
+  - retry history when the first draft was weak
+
+Limitation:
+  If the model overstates or invents a detail, the first answer is still final.
+```
+
+#### Agentic RAG (this repo) — expected result
+
+```text
+Pipeline:  query → Retrieval → Reasoning → Verification → return PipelineResult
+
+Returned to caller (PipelineResult fields):
+  answer:
+    "Agentic RAG systems combine Retrieval, Reasoning, and Verification using
+     specialized agents. The Retrieval agent fetches relevant knowledge [12].
+     The Reasoning agent performs inference and decision-making. The Verification
+     agent checks results for accuracy and consistency [12]."
+
+  search_query:           "Agentic RAG retrieval reasoning verification agents"
+  draft_answer:           <first grounded draft from Reasoning agent>
+  reasoning_thought:      <evidence plan, e.g. which chunks support the claim>
+  verification_thought:   <claim-level grounding analysis>
+  is_grounded:            true
+  verification_notes:     "Claims match retrieved chunks; citations consistent."
+  react_trace:            [retrieval step, reasoning step, verification step, ...]
+  errors:                 []
+  retry_count:            0
+
+What this enables for reviewers:
+  - see how the search query was planned (Retrieval Thought/Action)
+  - separate draft from verified answer
+  - confirm grounding before trusting the answer
+  - audit the full ReAct trail if quality is questioned
+```
+
+### Side-by-side summary
+
+| What a reviewer sees | Normal RAG | Agentic RAG |
+|----------------------|------------|-------------|
+| Final answer text | Yes | Yes (`answer`) |
+| Citations / chunk refs | Sometimes (if prompted) | Encouraged in draft + verified answer |
+| Search query used | Usually raw user text | Often rewritten (`search_query`) |
+| Intermediate reasoning | Hidden inside one generate call | Visible (`reasoning_thought`, `react_trace`) |
+| Grounding check | None | `is_grounded` + `verification_notes` |
+| Retry if ungrounded | No | Yes (bounded `retry_count`) |
+| Debug artifact for hiring / ops review | Final string only | Full structured `PipelineResult` |
+
+### Second example (when quality differs)
+
+> Query that retrieves weak or partial context
+
+| Stage | Normal RAG expected outcome | Agentic RAG expected outcome |
+|-------|----------------------------|------------------------------|
+| Retrieve | Top-k chunks returned once | Same store; Retrieval agent may reformulate the query |
+| Generate | One answer, possibly overconfident | Reasoning produces a **draft** only |
+| Quality gate | None — answer returned as-is | Verification may set `is_grounded=false` and **retry retrieve→reason** |
+| Caller sees | Single string | `answer` + `is_grounded` + `errors` / `react_trace` explaining retries |
+
+**Takeaway for readers:** Normal RAG optimizes for a fast single-pass answer. Agentic RAG optimizes for a **reviewable, gated answer**—same corpus, richer expected result shape, and a clearer path to catch ungrounded responses.
+
+---
+
 ## Configuration
 
 Copy `.env.example` to `.env` and set required values:
