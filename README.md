@@ -8,8 +8,91 @@ The pipeline separates retrieval, reasoning, and verification into specialized a
 
 ## Architecture
 
+### System overview
+
+```mermaid
+flowchart TB
+    subgraph Entry["Entry"]
+        CLI["CLI / API<br/><code>main.py</code>"]
+        Pipeline["AgenticRAGPipeline<br/><code>graph.py</code>"]
+    end
+
+    subgraph Graph["LangGraph workflow"]
+        R["Retrieval Agent<br/>Thought → search query → Observation"]
+        Re["Reasoning Agent<br/>Thought → draft answer → Observation"]
+        V["Verification Agent<br/>Thought → accept / retry → Observation"]
+        E["Error-handler Agent<br/>controlled fallback"]
+    end
+
+    subgraph Infra["Infrastructure"]
+        VS[("ChromaDB<br/>vector store")]
+        LLM["Groq LLM<br/>llama-3.3-70b"]
+        State["Shared state<br/>+ react_trace"]
+    end
+
+    Out["PipelineResult<br/>answer · is_grounded · react_trace"]
+
+    CLI --> Pipeline
+    Pipeline --> R
+    R -->|docs found| Re
+    R -->|no docs / failure| E
+    Re --> V
+    Re -->|failure| E
+    V -->|grounded| Out
+    V -->|not grounded<br/>retries left| R
+    V -->|retries exhausted| Out
+    V -->|failure| E
+    E --> Out
+
+    R -.->|similarity_search| VS
+    R & Re & V -.->|Thought / Action| LLM
+    R & Re & V & E -.->|read / write| State
+    Pipeline --> Out
 ```
-RAG_VS_AgenticRAG/
+
+### Agent workflow (happy path + retry)
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Pipeline as AgenticRAGPipeline
+    participant Retrieval
+    participant Chroma as ChromaDB
+    participant Reasoning
+    participant Verification
+    participant Groq as Groq LLM
+
+    User->>Pipeline: query
+    Pipeline->>Retrieval: start
+
+    Note over Retrieval: ReAct: Thought → Action → Observation
+    Retrieval->>Groq: reformulate search query
+    Retrieval->>Chroma: similarity_search
+    Chroma-->>Retrieval: top-k chunks
+    Retrieval->>Reasoning: retrieved docs
+
+    Note over Reasoning: ReAct: Thought → Action → Observation
+    Reasoning->>Groq: draft grounded answer
+    Reasoning->>Verification: draft_answer
+
+    Note over Verification: ReAct: Thought → Action → Observation
+    Verification->>Groq: claim-level grounding check
+
+    alt grounded
+        Verification-->>Pipeline: verified answer
+    else not grounded + retries remaining
+        Verification->>Retrieval: retry retrieve → reason → verify
+    else retries exhausted / failure
+        Verification-->>Pipeline: best-effort or error fallback
+    end
+
+    Pipeline-->>User: PipelineResult
+```
+
+### Project layout
+
+```
+AgenticRAG/
 ├── main.py                      # CLI entry point
 ├── pyproject.toml
 ├── requirements.txt
@@ -32,7 +115,7 @@ RAG_VS_AgenticRAG/
     └── graph.py                 # Workflow compilation + AgenticRAGPipeline
 ```
 
-### Control flow
+### Control flow (text)
 
 ```text
 Query
