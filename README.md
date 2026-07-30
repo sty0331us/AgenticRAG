@@ -98,17 +98,22 @@ AgenticRAG/
 ├── requirements.txt
 ├── .env.example
 ├── README.md
+├── tests/                       # Unit tests (pytest)
 └── agentic_rag/
-    ├── __init__.py              # Public API exports
+    ├── __init__.py              # Public API exports (lazy)
     ├── config.py                # Environment-backed settings (Pydantic)
     ├── exceptions.py            # Domain exception hierarchy
     ├── logging_config.py        # Structured logging
-    ├── models.py                # PipelineResult response model
+    ├── models.py                # PipelineResult / sources / metrics
+    ├── metrics.py               # Latency timing helpers
     ├── state.py                 # LangGraph shared state contracts
     ├── prompts.py               # Agent system prompts
     ├── react.py                 # ReAct parsing and audit-trail helpers
+    ├── routing.py               # next_action → graph node map
     ├── llm.py                   # Inference client factory
     ├── vectorstore.py           # ChromaDB persistence and search
+    ├── retrieval_utils.py       # Multi-query merge helpers
+    ├── retrieval.py             # Multi-query expansion + search
     ├── knowledge.py             # Reference corpus
     ├── ingest.py                # Corpus bootstrap
     ├── agents.py                # Retrieval / Reasoning / Verification / Error
@@ -136,8 +141,8 @@ Any node failure ──► Error-handler Agent ──► END (controlled fallbac
 | Step | Behavior |
 |------|----------|
 | Thought | Reformulates the question into an embedding-optimized search query |
-| Action | Executes `similarity_search` against ChromaDB |
-| Observation | Records retrieved documents and routes to reasoning or error handling |
+| Action | Runs primary (+ optional multi-query) `similarity_search` against ChromaDB |
+| Observation | Records ranked documents with scores and routes to reasoning or error handling |
 
 ### Reasoning agent
 
@@ -227,6 +232,8 @@ Returned to caller (PipelineResult fields):
   is_grounded:            true
   verification_notes:     "Claims match retrieved chunks; citations consistent."
   react_trace:            [retrieval step, reasoning step, verification step, ...]
+  sources:                [{index, text, score, metadata}, ...]
+  metrics:                {total_seconds, retrieval_seconds, ...}
   errors:                 []
   retry_count:            0
 
@@ -275,6 +282,8 @@ Copy `.env.example` to `.env` and set required values:
 | `CHROMA_PERSIST_DIR` | Local ChromaDB persistence path |
 | `CHROMA_COLLECTION` | Collection name |
 | `RETRIEVAL_TOP_K` | Number of chunks retrieved per search |
+| `MULTI_QUERY_ENABLED` | Expand the primary search into alternate phrasings (`true`/`false`) |
+| `MULTI_QUERY_COUNT` | Number of alternate queries to generate (0 disables expansion) |
 | `MAX_VERIFICATION_RETRIES` | Bound on verification-driven retries |
 | `LOG_LEVEL` | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR` |
 
@@ -301,6 +310,17 @@ source .venv/bin/activate
 python main.py "What is Agentic RAG?"
 python main.py "Compare MCP and ACP" --json
 python main.py --reingest --log-level DEBUG "Why use multi-agent systems?"
+python main.py "What is Agentic RAG?" --show-sources --show-metrics
+python main.py --batch-file queries.txt --show-metrics
+```
+
+Batch files accept one query per line; lines starting with `#` are ignored.
+
+### Tests
+
+```bash
+pip install -e ".[dev]"
+pytest
 ```
 
 ### Programmatic API
@@ -315,6 +335,8 @@ result = pipeline.invoke("What is Agentic RAG?")
 
 print(result.answer)
 print(result.is_grounded)
+print(result.sources[0].score, result.sources[0].metadata)
+print(result.metrics.total_seconds)
 print(result.react_trace)
 ```
 
@@ -323,7 +345,8 @@ print(result.react_trace)
 ## Design notes
 
 - **Configuration**: validated via Pydantic Settings; secrets are never hard-coded.
-- **Observability**: agents emit structured logs and append ReAct steps to shared state.
+- **Observability**: agents emit structured logs, ReAct steps, latency metrics, and scored sources.
+- **Retrieval**: optional multi-query expansion merges alternate phrasings by similarity score.
 - **Resilience**: verification retries are bounded; failures route to an error-handler node.
 - **API stability**: external callers should depend on `AgenticRAGPipeline` and `PipelineResult`.
 
