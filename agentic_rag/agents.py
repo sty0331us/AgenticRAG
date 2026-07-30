@@ -31,8 +31,8 @@ from agentic_rag.react import (
     format_context,
     parse_labeled_blocks,
 )
+from agentic_rag.retrieval import multi_query_search
 from agentic_rag.state import AgenticRAGState
-from agentic_rag.vectorstore import similarity_search
 
 logger = get_logger(__name__)
 
@@ -68,8 +68,10 @@ def _retrieval_agent(state: AgenticRAGState) -> AgenticRAGState:
         search_query = parsed.get("SEARCH_QUERY") or state["query"]
         state["search_query"] = search_query
 
-        docs, metas, scores = similarity_search(
-            search_query, k=cfg.retrieval_top_k, settings=cfg
+        docs, metas, scores, queries_used = multi_query_search(
+            search_query,
+            question=state["query"],
+            settings=cfg,
         )
         state["retrieved_docs"] = docs
         state["retrieved_metadatas"] = metas
@@ -78,7 +80,8 @@ def _retrieval_agent(state: AgenticRAGState) -> AgenticRAGState:
         if docs and scores:
             top_score = max(scores)
             observation = (
-                f"Retrieved {len(docs)} document(s) for search_query={search_query!r} "
+                f"Retrieved {len(docs)} document(s) across {len(queries_used)} "
+                f"quer(ies) for search_query={search_query!r} "
                 f"(top_score={top_score:.3f})."
             )
         elif docs:
@@ -87,11 +90,15 @@ def _retrieval_agent(state: AgenticRAGState) -> AgenticRAGState:
             )
         else:
             observation = "Vector store returned zero documents."
+        action_label = (
+            f"multi_query_search(primary={search_query!r}, "
+            f"queries={len(queries_used)}, k={cfg.retrieval_top_k})"
+        )
         append_react_step(
             state,
             agent="retrieval",
             thought=thought,
-            action=f"similarity_search(query={search_query!r}, k={cfg.retrieval_top_k})",
+            action=action_label,
             observation=observation,
         )
 

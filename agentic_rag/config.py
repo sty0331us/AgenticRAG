@@ -34,6 +34,16 @@ class Settings(BaseSettings):
     chroma_collection: str = Field(default="agentic_rag_knowledge")
 
     retrieval_top_k: int = Field(default=4, ge=1, le=20)
+    multi_query_enabled: bool = Field(
+        default=True,
+        description="Expand the search query into alternate phrasings and merge hits",
+    )
+    multi_query_count: int = Field(
+        default=2,
+        ge=0,
+        le=5,
+        description="Number of alternate search queries to generate (0 disables expansion)",
+    )
     max_verification_retries: int = Field(default=2, ge=0, le=5)
     reasoning_temperature: float = Field(default=0.2, ge=0.0, le=2.0)
     deterministic_temperature: float = Field(default=0.0, ge=0.0, le=2.0)

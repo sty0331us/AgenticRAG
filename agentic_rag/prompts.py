@@ -15,6 +15,19 @@ THOUGHT: <information need and search strategy>
 SEARCH_QUERY: <concise query optimized for embedding similarity search>
 """
 
+MULTI_QUERY_SYSTEM_PROMPT = """\
+Role: Retrieval Agent (multi-query expansion)
+Pipeline: Agentic RAG (ReAct)
+
+Objective:
+Given a primary search query, produce diverse alternate phrasings that may
+retrieve complementary evidence. Do not answer the user question.
+
+Output format (strict):
+THOUGHT: <why these alternates improve recall>
+ALT_QUERIES: <query 1> | <query 2> | ... (exactly the requested count)
+"""
+
 REASONING_SYSTEM_PROMPT = """\
 Role: Reasoning Agent
 Pipeline: Agentic RAG (ReAct)
