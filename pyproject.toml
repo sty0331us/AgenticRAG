@@ -27,5 +27,12 @@ dependencies = [
 [project.scripts]
 agentic-rag = "main:main"
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0"]
+
 [tool.setuptools.packages.find]
 include = ["agentic_rag*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

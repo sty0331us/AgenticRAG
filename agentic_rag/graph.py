@@ -25,22 +25,10 @@ from agentic_rag.config import Settings, get_settings
 from agentic_rag.logging_config import get_logger
 from agentic_rag.metrics import elapsed_since, record_metric
 from agentic_rag.models import PipelineResult
+from agentic_rag.routing import route_next_step
 from agentic_rag.state import AgenticRAGState
 
 logger = get_logger(__name__)
-
-_ROUTE_MAP = {
-    "retrieve": "retrieval",
-    "reason": "reasoning",
-    "verify": "verification",
-    "error": "error_handler",
-    "complete": "END",
-}
-
-
-def route_next_step(state: AgenticRAGState) -> str:
-    """Resolve the next graph node from `state['next_action']`."""
-    return _ROUTE_MAP.get(state.get("next_action", "retrieve"), "END")
 
 
 def build_workflow() -> CompiledStateGraph:

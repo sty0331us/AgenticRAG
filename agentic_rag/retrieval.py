@@ -1,42 +1,23 @@
-"""Multi-query retrieval helpers: expand, search, and merge ranked evidence."""
+"""Multi-query retrieval: expand search queries and merge ranked evidence."""
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Sequence, Tuple
-
-from langchain_core.messages import HumanMessage, SystemMessage
+from typing import Any, Dict, List, Tuple
 
 from agentic_rag.config import Settings
-from agentic_rag.llm import get_llm, invoke_text
 from agentic_rag.logging_config import get_logger
-from agentic_rag.prompts import MULTI_QUERY_SYSTEM_PROMPT
 from agentic_rag.react import parse_labeled_blocks
+from agentic_rag.retrieval_utils import merge_ranked_hits, parse_alt_queries
 from agentic_rag.vectorstore import similarity_search
 
 logger = get_logger(__name__)
 
-
-def parse_alt_queries(raw: str, limit: int) -> List[str]:
-    """Parse pipe- or newline-separated alternate queries, capped at ``limit``."""
-    if not raw or limit <= 0:
-        return []
-    parts: List[str] = []
-    for chunk in raw.replace("\n", "|").split("|"):
-        cleaned = chunk.strip().strip("-").strip()
-        if cleaned:
-            parts.append(cleaned)
-    # Deduplicate while preserving order.
-    seen = set()
-    unique: List[str] = []
-    for part in parts:
-        key = part.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(part)
-        if len(unique) >= limit:
-            break
-    return unique
+__all__ = [
+    "generate_alternate_queries",
+    "merge_ranked_hits",
+    "multi_query_search",
+    "parse_alt_queries",
+]
 
 
 def generate_alternate_queries(
@@ -52,6 +33,11 @@ def generate_alternate_queries(
     """
     if count <= 0:
         return [], ""
+
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    from agentic_rag.llm import get_llm, invoke_text
+    from agentic_rag.prompts import MULTI_QUERY_SYSTEM_PROMPT
 
     llm = get_llm(temperature=settings.deterministic_temperature, settings=settings)
     content = invoke_text(
@@ -70,36 +56,10 @@ def generate_alternate_queries(
     parsed = parse_labeled_blocks(content, ["THOUGHT", "ALT_QUERIES"])
     thought = parsed.get("THOUGHT") or ""
     alts = parse_alt_queries(parsed.get("ALT_QUERIES") or "", count)
-    # Drop alternates that duplicate the primary query.
     primary_key = primary_query.strip().lower()
     alts = [q for q in alts if q.strip().lower() != primary_key]
     logger.debug("Generated %s alternate search queries", len(alts))
     return alts, thought
-
-
-def merge_ranked_hits(
-    hit_groups: Sequence[Tuple[List[str], List[Dict[str, Any]], List[float]]],
-    top_k: int,
-) -> Tuple[List[str], List[Dict[str, Any]], List[float]]:
-    """
-    Merge retrieval results across queries, keeping the highest score per document.
-
-    Documents are keyed by exact text content.
-    """
-    best: Dict[str, Tuple[float, Dict[str, Any]]] = {}
-    for docs, metas, scores in hit_groups:
-        for i, doc in enumerate(docs):
-            score = scores[i] if i < len(scores) else 0.0
-            meta = dict(metas[i]) if i < len(metas) else {}
-            previous = best.get(doc)
-            if previous is None or score > previous[0]:
-                best[doc] = (score, meta)
-
-    ranked = sorted(best.items(), key=lambda item: item[1][0], reverse=True)[:top_k]
-    merged_docs = [doc for doc, _ in ranked]
-    merged_scores = [score for _, (score, _) in ranked]
-    merged_metas = [meta for _, (_, meta) in ranked]
-    return merged_docs, merged_metas, merged_scores
 
 
 def multi_query_search(
