@@ -28,6 +28,7 @@ class AgenticRAGState(TypedDict):
     search_query: Optional[str]
     retrieved_docs: Optional[List[str]]
     retrieved_metadatas: Optional[List[dict]]
+    retrieved_scores: Optional[List[float]]
     reasoning_thought: Optional[str]
     draft_answer: Optional[str]
     verification_thought: Optional[str]

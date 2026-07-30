@@ -76,6 +76,7 @@ def initial_state(query: str) -> AgenticRAGState:
         "search_query": None,
         "retrieved_docs": None,
         "retrieved_metadatas": None,
+        "retrieved_scores": None,
         "reasoning_thought": None,
         "draft_answer": None,
         "verification_thought": None,

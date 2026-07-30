@@ -62,15 +62,25 @@ def retrieval_agent(state: AgenticRAGState) -> AgenticRAGState:
         search_query = parsed.get("SEARCH_QUERY") or state["query"]
         state["search_query"] = search_query
 
-        docs, metas = similarity_search(search_query, k=cfg.retrieval_top_k, settings=cfg)
+        docs, metas, scores = similarity_search(
+            search_query, k=cfg.retrieval_top_k, settings=cfg
+        )
         state["retrieved_docs"] = docs
         state["retrieved_metadatas"] = metas
+        state["retrieved_scores"] = scores
 
-        observation = (
-            f"Retrieved {len(docs)} document(s) for search_query={search_query!r}."
-            if docs
-            else "Vector store returned zero documents."
-        )
+        if docs and scores:
+            top_score = max(scores)
+            observation = (
+                f"Retrieved {len(docs)} document(s) for search_query={search_query!r} "
+                f"(top_score={top_score:.3f})."
+            )
+        elif docs:
+            observation = (
+                f"Retrieved {len(docs)} document(s) for search_query={search_query!r}."
+            )
+        else:
+            observation = "Vector store returned zero documents."
         append_react_step(
             state,
             agent="retrieval",
@@ -107,7 +117,11 @@ def reasoning_agent(state: AgenticRAGState) -> AgenticRAGState:
     cfg = get_settings()
     try:
         docs = state.get("retrieved_docs") or []
-        context = format_context(docs)
+        context = format_context(
+            docs,
+            metadatas=state.get("retrieved_metadatas"),
+            scores=state.get("retrieved_scores"),
+        )
         llm = get_llm(temperature=cfg.reasoning_temperature, settings=cfg)
         content = invoke_text(
             llm,
@@ -155,7 +169,11 @@ def verification_agent(state: AgenticRAGState) -> AgenticRAGState:
     cfg = get_settings()
     try:
         docs = state.get("retrieved_docs") or []
-        context = format_context(docs)
+        context = format_context(
+            docs,
+            metadatas=state.get("retrieved_metadatas"),
+            scores=state.get("retrieved_scores"),
+        )
         draft = state.get("draft_answer") or ""
         prior_thought = state.get("reasoning_thought") or ""
 

@@ -68,26 +68,50 @@ def add_documents(
     return len(texts)
 
 
+def _distance_to_score(distance: Optional[float]) -> float:
+    """Convert Chroma cosine distance to a similarity score in roughly [0, 1]."""
+    if distance is None:
+        return 0.0
+    return max(0.0, 1.0 - float(distance))
+
+
 def similarity_search(
     query: str,
     k: Optional[int] = None,
     settings: Settings | None = None,
-) -> Tuple[List[str], List[Dict[str, Any]]]:
-    """Retrieve top-k documents by embedding similarity."""
+) -> Tuple[List[str], List[Dict[str, Any]], List[float]]:
+    """
+    Retrieve top-k documents by embedding similarity.
+
+    Returns:
+        (documents, metadatas, similarity_scores)
+        Scores are derived from cosine distance as ``1 - distance``.
+    """
     cfg = settings or get_settings()
     top_k = k if k is not None else cfg.retrieval_top_k
     collection = get_collection(settings=cfg)
     total = collection.count()
     if total == 0:
         logger.warning("Similarity search requested against an empty collection")
-        return [], []
+        return [], [], []
 
     n_results = min(top_k, total)
-    results = collection.query(query_texts=[query], n_results=n_results)
+    results = collection.query(
+        query_texts=[query],
+        n_results=n_results,
+        include=["documents", "metadatas", "distances"],
+    )
     docs = (results.get("documents") or [[]])[0] or []
     metas = (results.get("metadatas") or [[]])[0] or []
+    distances = (results.get("distances") or [[]])[0] or []
+    scores = [_distance_to_score(d) for d in distances]
+    # Keep lists aligned if Chroma omits a field for any hit.
+    while len(metas) < len(docs):
+        metas.append({})
+    while len(scores) < len(docs):
+        scores.append(0.0)
     logger.debug("Retrieved %s/%s documents for query", len(docs), n_results)
-    return docs, metas
+    return docs, metas, scores
 
 
 def collection_count(settings: Settings | None = None) -> int:

@@ -71,6 +71,22 @@ def parse_labeled_blocks(text: str, labels: List[str]) -> Dict[str, str]:
     return result
 
 
-def format_context(docs: List[str]) -> str:
-    """Format retrieved chunks with stable citation indices."""
-    return "\n\n".join(f"[{i + 1}] {doc}" for i, doc in enumerate(docs))
+def format_context(
+    docs: List[str],
+    metadatas: Optional[List[dict]] = None,
+    scores: Optional[List[float]] = None,
+) -> str:
+    """Format retrieved chunks with stable citation indices and optional provenance."""
+    blocks: List[str] = []
+    for i, doc in enumerate(docs):
+        header_parts = [f"[{i + 1}]"]
+        if scores is not None and i < len(scores):
+            header_parts.append(f"score={scores[i]:.3f}")
+        if metadatas is not None and i < len(metadatas) and metadatas[i]:
+            meta = metadatas[i]
+            topic = meta.get("topic") or meta.get("section") or meta.get("source")
+            if topic:
+                header_parts.append(f"source={topic}")
+        header = " ".join(header_parts)
+        blocks.append(f"{header}\n{doc}")
+    return "\n\n".join(blocks)
