@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Optional
+import time
 
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -22,6 +23,7 @@ from agentic_rag.agents import (
 )
 from agentic_rag.config import Settings, get_settings
 from agentic_rag.logging_config import get_logger
+from agentic_rag.metrics import elapsed_since, record_metric
 from agentic_rag.models import PipelineResult
 from agentic_rag.state import AgenticRAGState
 
@@ -87,6 +89,7 @@ def initial_state(query: str) -> AgenticRAGState:
         "errors": [],
         "next_action": "retrieve",
         "retry_count": 0,
+        "metrics": {},
     }
 
 
@@ -111,12 +114,15 @@ class AgenticRAGPipeline:
             raise ValueError("query must be a non-empty string")
 
         logger.info("Pipeline invoke started")
+        started = time.perf_counter()
         final_state: AgenticRAGState = self._app.invoke(initial_state(query))
+        record_metric(final_state, "total_seconds", elapsed_since(started))
         result = PipelineResult.from_state(final_state)
         logger.info(
-            "Pipeline invoke completed grounded=%s errors=%s",
+            "Pipeline invoke completed grounded=%s errors=%s total_seconds=%.3f",
             result.is_grounded,
             len(result.errors),
+            result.metrics.total_seconds or 0.0,
         )
         return result
 

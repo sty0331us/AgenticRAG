@@ -19,6 +19,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from agentic_rag.config import get_settings
 from agentic_rag.llm import get_llm, invoke_text
 from agentic_rag.logging_config import get_logger
+from agentic_rag.metrics import timed_section
 from agentic_rag.prompts import (
     REASONING_SYSTEM_PROMPT,
     RETRIEVAL_SYSTEM_PROMPT,
@@ -44,6 +45,11 @@ def retrieval_agent(state: AgenticRAGState) -> AgenticRAGState:
     Action   — execute similarity search against ChromaDB
     Observe  — persist retrieved evidence and route onward
     """
+    with timed_section(state, "retrieval_seconds"):
+        return _retrieval_agent(state)
+
+
+def _retrieval_agent(state: AgenticRAGState) -> AgenticRAGState:
     cfg = get_settings()
     try:
         llm = get_llm(temperature=cfg.deterministic_temperature, settings=cfg)
@@ -114,6 +120,11 @@ def reasoning_agent(state: AgenticRAGState) -> AgenticRAGState:
     Action   — produce a draft answer grounded in retrieved context
     Observe  — store draft and advance to verification
     """
+    with timed_section(state, "reasoning_seconds"):
+        return _reasoning_agent(state)
+
+
+def _reasoning_agent(state: AgenticRAGState) -> AgenticRAGState:
     cfg = get_settings()
     try:
         docs = state.get("retrieved_docs") or []
@@ -166,6 +177,11 @@ def verification_agent(state: AgenticRAGState) -> AgenticRAGState:
     Action   — accept, correct, or reject the draft
     Observe  — complete the workflow or schedule a retrieval retry
     """
+    with timed_section(state, "verification_seconds"):
+        return _verification_agent(state)
+
+
+def _verification_agent(state: AgenticRAGState) -> AgenticRAGState:
     cfg = get_settings()
     try:
         docs = state.get("retrieved_docs") or []
@@ -259,6 +275,11 @@ def error_handler_agent(state: AgenticRAGState) -> AgenticRAGState:
     Emits a controlled fallback response when an upstream node fails, preserving
     auditability instead of propagating an unhandled exception to callers.
     """
+    with timed_section(state, "error_handler_seconds"):
+        return _error_handler_agent(state)
+
+
+def _error_handler_agent(state: AgenticRAGState) -> AgenticRAGState:
     errors = state.get("errors") or []
     error_summary = "; ".join(errors) if errors else "Unknown pipeline error"
     fallback = (

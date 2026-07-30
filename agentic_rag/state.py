@@ -39,3 +39,4 @@ class AgenticRAGState(TypedDict):
     errors: List[str]
     next_action: str
     retry_count: int
+    metrics: Optional[dict]

@@ -32,6 +32,27 @@ class RetrievedSource(BaseModel):
         return f"[{self.index}]"
 
 
+class PipelineMetrics(BaseModel):
+    """Wall-clock timing collected during a pipeline run (seconds)."""
+
+    total_seconds: Optional[float] = None
+    retrieval_seconds: Optional[float] = None
+    reasoning_seconds: Optional[float] = None
+    verification_seconds: Optional[float] = None
+    error_handler_seconds: Optional[float] = None
+
+    @classmethod
+    def from_state_metrics(cls, metrics: Optional[Dict[str, float]]) -> "PipelineMetrics":
+        data = metrics or {}
+        return cls(
+            total_seconds=data.get("total_seconds"),
+            retrieval_seconds=data.get("retrieval_seconds"),
+            reasoning_seconds=data.get("reasoning_seconds"),
+            verification_seconds=data.get("verification_seconds"),
+            error_handler_seconds=data.get("error_handler_seconds"),
+        )
+
+
 class PipelineResult(BaseModel):
     """Stable public response returned by AgenticRAGPipeline.invoke()."""
 
@@ -50,6 +71,7 @@ class PipelineResult(BaseModel):
     react_trace: List[ReActStepModel] = Field(default_factory=list)
     errors: List[str] = Field(default_factory=list)
     retry_count: int = 0
+    metrics: PipelineMetrics = Field(default_factory=PipelineMetrics)
 
     @classmethod
     def from_state(cls, state: AgenticRAGState) -> "PipelineResult":
@@ -88,6 +110,7 @@ class PipelineResult(BaseModel):
             react_trace=[ReActStepModel(**step) for step in (state.get("react_trace") or [])],
             errors=list(state.get("errors") or []),
             retry_count=int(state.get("retry_count") or 0),
+            metrics=PipelineMetrics.from_state_metrics(state.get("metrics")),
         )
 
     def to_dict(self) -> Dict[str, Any]:
